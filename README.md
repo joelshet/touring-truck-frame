@@ -9,6 +9,7 @@ These are ready to cut, in `out/`:
 - `bottom.dxf`, `side.dxf`, `front.dxf`: one of each per corner, in inches, kerf-compensated
 - `bottom.svg`, `side.svg`, `front.svg`: the same parts as SVG
 - `parts.svg`: all three side by side
+- `preview.svg`: the parts with the extrusion footprints shaded, for checking only. Don't cut this one.
 
 The cut files are built for 7/16" sheet (measured) and a 0.2 mm kerf. If your sheet measures differently, change `T` and regenerate.
 

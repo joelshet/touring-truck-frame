@@ -14,7 +14,7 @@ plates: the post runs through, the rails butt into it.
 """
 
 import sys
-from math import atan2, cos, degrees, hypot, radians
+from math import atan2, cos, degrees, radians
 from pathlib import Path
 
 from build123d import (
@@ -63,9 +63,11 @@ NUT_OFFSET = 0.75     # edge to near side of the nut pocket
 JOINTS_PER_EDGE = 3
 FINGER_W = 1.5        # width of the finger around each bolt; 0 = plain overlap, no fingers
 
-HANDLE_LEN = 4.0      # overall length, parallel to the angled edge
+# The handle runs parallel to the angled edge and is as long as it can be while
+# staying clear of the extrusions and HANDLE_WEB in from the far edges.
 HANDLE_W = 1.25
 HANDLE_WEB = 1.75     # wood left between the angled edge and the handle
+HANDLE_MIN = 3.0      # shortest handle allowed
 
 CLEAR = 0.012         # added to joint holes, pockets and counterbores for fit
 KERF = 0.2 / 25.4     # laser kerf; cut files are offset by half of it. 0 if the laser software compensates
@@ -163,13 +165,35 @@ def rail_points(plate):
     return sorted({(round(a, 6), round(b, 6)) for a, b in points})
 
 
-def handle(a, b):
-    """Slot parallel to the edge a-b, set in from it toward the corner."""
-    dx, dy = b[0] - a[0], b[1] - a[1]
-    n = hypot(dx, dy)
-    inset = HANDLE_WEB + HANDLE_W / 2
-    centre = ((a[0] + b[0]) / 2 - dy / n * inset, (a[1] + b[1]) / 2 + dx / n * inset)
-    return Pos(*centre) * SlotOverall(HANDLE_LEN, HANDLE_W, rotation=degrees(atan2(dy, dx)))
+def handle(plate):
+    """(centre, direction, overall length) of the handle slot."""
+    u, v, cut_u, cut_v = PLATES[plate]
+    a, b = Vector(SIZE[u], cut_v, 0), Vector(cut_u, SIZE[v], 0)
+    d = (b - a).normalized()
+    r = HANDLE_W / 2
+    line = (a + b) / 2 + Vector(-d.Y, d.X, 0) * (HANDLE_WEB + r)
+    # Slide the end centres along the line until the slot touches the
+    # extrusions' footprint (low side) or the far-edge web (high side).
+    lo, hi = -float("inf"), float("inf")
+    for c, dc, top in ((line.X, d.X, SIZE[u]), (line.Y, d.Y, SIZE[v])):
+        t1, t2 = (T + RAIL + r - c) / dc, (top - HANDLE_WEB - r - c) / dc
+        lo, hi = max(lo, min(t1, t2)), min(hi, max(t1, t2))
+    length = hi - lo + HANDLE_W
+    assert length >= HANDLE_MIN, f"{plate}: only room for a {length:.2f} in handle"
+    return line + d * ((lo + hi) / 2), d, length
+
+
+def handle_slot(plate):
+    centre, d, length = handle(plate)
+    return Pos(centre) * SlotOverall(length, HANDLE_W, rotation=degrees(atan2(d.Y, d.X)))
+
+
+def footprint(plate):
+    """Where the extrusions sit on the plate's inside face (preview only)."""
+    u, v = axes(plate)
+    lo = (Align.MIN, Align.MIN)
+    return (Pos(T, T) * Rectangle(SIZE[u] - T, RAIL, align=lo)
+            + Pos(T, T) * Rectangle(RAIL, SIZE[v] - T, align=lo))
 
 
 def fingers(axis):
@@ -205,7 +229,7 @@ def plate_face(plate):
     for edge, rects in cuts:
         for r in rects:
             face -= r if edge == u else mirror(r, SWAP)
-    face -= handle((U, cut_v), (cut_u, V))
+    face -= handle_slot(plate)
 
     joints = [
         c if edge == u else mirror(c, SWAP)
@@ -311,15 +335,21 @@ def main():
         svg.add_shape(path)
         svg.write(OUT / f"{name}.svg")
         size = face.bounding_box().size
-        print(f"{name:7s} {size.X:.3f} x {size.Y:.3f} in, {n_rail} rail holes")
+        print(f"{name:7s} {size.X:.3f} x {size.Y:.3f} in, {n_rail} rail holes, {handle(name)[2]:.2f} in handle")
     print("joint bolts per edge: " + ", ".join(f"{a} {len(b)}" for a, b in JOINTS.items()))
 
-    sheet, x = ExportSVG(unit=Unit.IN), 0.0
-    for face, _ in built.values():
+    sheet, preview, x = ExportSVG(unit=Unit.IN), ExportSVG(unit=Unit.IN), 0.0
+    preview.add_layer("extrusions", fill_color="lightsteelblue", line_color="steelblue")
+    preview.add_layer("parts")
+    for name, (face, _) in built.items():
         path = cut_path(face)
-        sheet.add_shape(Pos(x - path.bounding_box().min.X, 0) * path)
+        at = Pos(x - path.bounding_box().min.X, 0)
+        sheet.add_shape(at * path)
+        preview.add_shape(at * footprint(name), layer="extrusions")
+        preview.add_shape(at * path, layer="parts")
         x += path.bounding_box().size.X + 0.5
     sheet.write(OUT / "parts.svg")
+    preview.write(OUT / "preview.svg")  # parts with the extrusion footprints shaded; not for cutting
 
     iso_svg(Compound(children=list(solids.values()) + shanks), OUT / "corner.svg")
     iso_svg(Compound(children=list(solids.values()) + shanks), OUT / "corner_outside.svg", eye=(-2.5, -3, -2))
