@@ -6,14 +6,15 @@
 
 The overlaps run in a cycle: each plate overlaps one neighbour (button head
 bolts on that edge) and is overlapped by the other (captive hex-nut
-slots on that edge). The post and rails sit inside the corner against the
+slots on that edge). Along each edge the overlapping plate has a finger at
+every bolt and the other plate fills the gaps. The post and rails sit inside the corner against the
 plates: the post runs through, the rails butt into it.
 
     uv run bracket.py        # writes out/
 """
 
 import sys
-from math import atan2, degrees, hypot
+from math import atan2, cos, degrees, hypot, radians
 from pathlib import Path
 
 from build123d import (
@@ -24,7 +25,7 @@ from build123d import (
 
 # --- parameters (inches) -----------------------------------------------------
 
-T = 0.5               # sheet thickness: measure the actual sheet, it drives everything
+T = 7 / 16            # measured sheet thickness; it drives everything
 
 # Outside envelope of the assembled corner.
 SIZE = {"x": 9.0, "y": 10.0, "z": 8.0}   # side to side, front to back, top to bottom
@@ -60,6 +61,7 @@ NUT_AF = 0.4375       # nut width across flats; corners may poke past a thin she
 NUT_T = 0.219         # nut thickness
 NUT_OFFSET = 0.75     # edge to near side of the nut pocket
 JOINTS_PER_EDGE = 3
+FINGER_W = 1.5        # width of the finger around each bolt; 0 = plain overlap, no fingers
 
 HANDLE_LEN = 4.0      # overall length, parallel to the angled edge
 HANDLE_W = 1.25
@@ -98,7 +100,10 @@ JOINTS = {a: joint_positions(n) for a, n in SIZE.items()}
 
 assert set(OVERLAPS) == set(OVERLAPS.values()) == set(PLATES)
 assert all(OVERLAPS[OVERLAPS[p]] != p for p in PLATES), "overlaps must form a cycle"
-assert NUT_AF < T, "nut is wider than the sheet is thick"
+assert NUT_AF <= T, "nut is wider across flats than the sheet is thick"
+nut_proud = (NUT_AF / cos(radians(30)) - T) / 2
+if nut_proud > 0:
+    print(f"warning: hex nut corners stand {nut_proud:.3f} in proud of each face", file=sys.stderr)
 assert NUT_OFFSET + NUT_T < BITE, "bolt too short to pass through the nut"
 assert 0 <= HEAD_RECESS < T
 
@@ -167,15 +172,39 @@ def handle(a, b):
     return Pos(*centre) * SlotOverall(HANDLE_LEN, HANDLE_W, rotation=degrees(atan2(dy, dx)))
 
 
+def fingers(axis):
+    """Stretches of the edge held by the bolting plate."""
+    if not FINGER_W:
+        return [(T, SIZE[axis])]
+    return [(b - FINGER_W / 2, b + FINGER_W / 2) for b in JOINTS[axis]]
+
+
+def gaps(axis):
+    """Stretches of the edge held by the nut plate."""
+    ends = [T] + [e for f in fingers(axis) for e in f] + [SIZE[axis]]
+    return [(a, b) for a, b in zip(ends[::2], ends[1::2]) if b > a]
+
+
+def notches(stretches, widen=0.0):
+    return [
+        Pos(a - widen, 0) * Rectangle(b - a + 2 * widen, T, align=(Align.MIN, Align.MIN))
+        for a, b in stretches
+    ]
+
+
 def plate_face(plate):
     u, v, cut_u, cut_v = PLATES[plate]
     U, V = SIZE[u], SIZE[v]
     bolt_edge = shared(plate, OVERLAPS[plate])
     nut_edge = u if bolt_edge == v else v
-    u0 = T if nut_edge == v else 0
-    v0 = T if nut_edge == u else 0
 
-    face = Polygon((u0, v0), (U, v0), (U, cut_v), (cut_u, V), (u0, V), align=None)
+    face = Polygon((0, 0), (U, 0), (U, cut_v), (cut_u, V), (0, V), align=None)
+    face -= Rectangle(T, T, align=(Align.MIN, Align.MIN))  # the outside corner is left open
+    # The neighbour's edge sits in each notch; the nut plate's notches get the clearance.
+    cuts = [(bolt_edge, notches(gaps(bolt_edge))), (nut_edge, notches(fingers(nut_edge), CLEAR / 2))]
+    for edge, rects in cuts:
+        for r in rects:
+            face -= r if edge == u else mirror(r, SWAP)
     face -= handle((U, cut_v), (cut_u, V))
 
     joints = [
@@ -250,9 +279,8 @@ def check(solids, others):
             assert vol < 1e-6, f"a bolt or rail hits {name} by {vol:.4f} in^3"
 
 
-def iso_svg(shape, path):
-    eye = max(SIZE.values())
-    visible, hidden = shape.project_to_viewport((3 * eye, 2 * eye, 2.5 * eye))
+def iso_svg(shape, path, eye=(3, 2, 2.5)):
+    visible, hidden = shape.project_to_viewport(Vector(eye) * max(SIZE.values()))
     extent = max(*Compound(children=visible + hidden).bounding_box().size)
     svg = ExportSVG(scale=150 / extent)
     svg.add_layer("visible", line_weight=0.3)
@@ -294,6 +322,7 @@ def main():
     sheet.write(OUT / "parts.svg")
 
     iso_svg(Compound(children=list(solids.values()) + shanks), OUT / "corner.svg")
+    iso_svg(Compound(children=list(solids.values()) + shanks), OUT / "corner_outside.svg", eye=(-2.5, -3, -2))
     iso_svg(Compound(children=list(solids.values()) + rails), OUT / "corner_rails.svg")
     everything = Compound(children=list(solids.values()) + shanks + rails)
     export_step(scale(everything, 25.4), OUT / "corner.step")  # STEP and STL are read as mm
