@@ -52,13 +52,13 @@ RAIL_MARGIN = 0.25    # wood required around each rail hole
 
 # Plate-to-plate joints: button head bolts into captive hex nuts, spread evenly
 # from the corner to the far end of each edge.
-BOLT_D = 0.25         # 1/4-20
+BOLT_D = 0.19         # #10-24
 BOLT_LEN = 2.0        # under-head length
-HEAD_D = 0.437        # button head diameter
-HEAD_H = 0.132        # button head height
+HEAD_D = 0.375        # button head diameter
+HEAD_H = 0.105        # button head height
 HEAD_RECESS = 0.0     # counterbore depth: 0 = head on the face, HEAD_H = flush
-NUT_AF = 0.4375       # nut width across flats; corners may poke past a thin sheet
-NUT_T = 0.219         # nut thickness
+NUT_AF = 0.375        # nut width across flats; corners may poke past a thin sheet
+NUT_T = 0.125         # nut thickness
 NUT_OFFSET = 0.75     # edge to near side of the nut pocket
 JOINTS_PER_EDGE = 3
 FINGER_W = 1.5        # width of the finger around each bolt; 0 = plain overlap, no fingers

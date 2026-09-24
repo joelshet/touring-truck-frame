@@ -34,7 +34,7 @@ All of them are at the top of `bracket.py`, in inches.
 
 ## Hardware per corner
 
-- 9 x 1/4-20 x 2" button head bolts, with 9 hex nuts, to join the plates. On 7/16" sheet the hex nut corners stand 0.034" proud of each face. 1/4-20 square nuts (7/16" across flats) sit flush and can't spin.
+- 9 x #10-24 x 2" button head bolts, with 9 hex nuts (3/8" across flats), to join the plates
 - 5/16-18 bolts with 15-series T-nuts into the extrusion slots. The four holes in the bottom plate's corner go into the post's tapped end bores.
 
 ## Other outputs
