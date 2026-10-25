@@ -1,0 +1,21 @@
+Sheet 0.4375 in, bit 0.2500 in, spacers 0.3750 in.
+
+1. Flat, one per plate. The profile layer is the tool-centre path: cut on the
+   line, full depth, with tabs. The through layer (holes, nut pockets, handle):
+   cut inside, full depth.
+   bottom_flat.dxf: 5.750 x 7.750 in
+   side_flat.dxf: 7.750 x 5.750 in, turned 90 degrees so the y edge runs along +Y
+   front_flat.dxf: 5.750 x 5.750 in
+
+2. Mark the up face of each plate. Stack them face-up as cut, bottom, side, front
+   from the bottom, with a spacer between each, bolted through the two middle
+   rail holes (the ones halfway along each leg).
+
+3. Edge-up, edges_1.dxf. Left to right: front (x edge), side (y edge), bottom (x edge).
+   y = 0 at the corner end, x = 0 at the left plate's left face.
+   pocket layer: 0.4375 deep. Then drill layer: 2.0625 deep from the
+   top of the edge. If the bit is shorter, start them and finish with a drill.
+4. Edge-up, edges_2.dxf. Left to right: bottom (y edge), side (z edge), front (z edge).
+   y = 0 at the corner end, x = 0 at the left plate's left face.
+   pocket layer: 0.4375 deep. Then drill layer: 2.0625 deep from the
+   top of the edge. If the bit is shorter, start them and finish with a drill.

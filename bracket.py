@@ -7,51 +7,57 @@
 The overlaps run in a cycle: each plate overlaps one neighbour (button head
 bolts on that edge) and is overlapped by the other (captive hex-nut
 slots on that edge). Along each edge the overlapping plate has a finger at
-every bolt and the other plate fills the gaps. The post and rails sit inside the corner against the
-plates: the post runs through, the rails butt into it.
+every bolt and the other plate fills the gaps. The post and rails sit inside
+the corner against the plates: the post runs through, the rails butt into it.
 
-    uv run bracket.py        # writes out/
+    uv run bracket.py        # writes out/ (laser) and out/handibot/ (CNC)
 """
 
 import sys
-from math import atan2, cos, degrees, radians
+from math import atan2, cos, degrees, radians, sqrt
 from pathlib import Path
 
 from build123d import (
-    Align, Box, Circle, Compound, Cylinder, ExportDXF, ExportSVG,
-    LineType, Plane, Polygon, Pos, Rectangle, SlotOverall, Unit, Vector,
-    Kind, export_step, export_stl, extrude, mirror, offset, scale,
+    Align, Box, Circle, Compound, Cylinder, ExportDXF, ExportSVG, Kind,
+    LineType, Plane, Polygon, Pos, Rectangle, Rot, SlotOverall, Unit, Vector,
+    export_step, export_stl, extrude, mirror, offset, scale,
 )
+
+MM = 1 / 25.4
 
 # --- parameters (inches) -----------------------------------------------------
 
 T = 7 / 16            # measured sheet thickness; it drives everything
 
 # Outside envelope of the assembled corner.
-SIZE = {"x": 9.0, "y": 10.0, "z": 8.0}   # side to side, front to back, top to bottom
+SIZE = {"x": 5.75, "y": 7.75, "z": 5.75}  # side to side, front to back, top to bottom
 
 # Each plate spans two axes (u, v) with the outside corner at the origin. The
 # angled edge runs from cut_u along the far u edge to cut_v along the far v edge.
 PLATES = {
     #          u    v    cut_u cut_v
-    "bottom": ("x", "y", 6.0, 5.0),
-    "side":   ("y", "z", 5.0, 5.0),
-    "front":  ("x", "z", 4.0, 5.0),
+    "bottom": ("x", "y", 4.5, 6.5),
+    "side":   ("y", "z", 6.5, 4.5),
+    "front":  ("x", "z", 4.5, 4.5),
 }
 
 # plate: the plate it overlaps. Must be a cycle through all three.
 OVERLAPS = {"bottom": "side", "side": "front", "front": "bottom"}
 
-# Post and rails: 80/20 15 series 3030, 5/16-18 hardware.
+# Post and rails: 30 x 30 mm extrusion, one slot per face (M6 T-nuts), M8
+# tapped centre bore.
 POST = "z"            # the post runs through the corner; the other two rails butt into it
-RAIL = 3.0            # extrusion width
-RAIL_SLOTS = (0.75, 2.25)  # slot centres across a face, from its edge
-END_BORES = (0.75, 2.25)   # tapped end bores (0.262 thru, 5/16-18), from each edge
-RAIL_HOLE_D = 0.33    # 5/16 clearance
+RAIL = 30 * MM        # extrusion width
+RAIL_SLOTS = (15 * MM,)    # slot centres across a face, from its edge
+END_BORES = (15 * MM,)     # tapped end bores, from each edge
+RAIL_HOLE_D = 6.6 * MM     # M6 clearance, into the slots
+END_HOLE_D = 8.4 * MM      # M8 clearance, into the post's end bore
+RAIL_FAR = True       # also put holes at the far end of each leg, for triangle strength
+RAIL_MID = True       # and one halfway along each leg; these also line the plates up in the stack
 RAIL_MARGIN = 0.25    # wood required around each rail hole
 
 # Plate-to-plate joints: button head bolts into captive hex nuts, spread evenly
-# from the corner to the far end of each edge.
+# along each edge.
 BOLT_D = 0.19         # #10-24
 BOLT_LEN = 2.0        # under-head length
 HEAD_D = 0.375        # button head diameter
@@ -59,48 +65,112 @@ HEAD_H = 0.105        # button head height
 HEAD_RECESS = 0.0     # counterbore depth: 0 = head on the face, HEAD_H = flush
 NUT_AF = 0.375        # nut width across flats; corners may poke past a thin sheet
 NUT_T = 0.125         # nut thickness
-NUT_OFFSET = 0.75     # edge to near side of the nut pocket
-JOINTS_PER_EDGE = 3
-FINGER_W = 1.5        # width of the finger around each bolt; 0 = plain overlap, no fingers
+NUT_OFFSET = 0.75     # notch floor to near side of the nut pocket
+JOINTS_PER_EDGE = 2
+JOINT_ENDS = (1.5, 1.5)  # first bolt this far past the neighbour's inside face, last this far from the far end
+FINGER_W = 1.0        # width of the finger around each bolt; 0 = plain overlap, no fingers
 
 # The handle runs parallel to the angled edge and is as long as it can be while
-# staying clear of the extrusions and HANDLE_WEB in from the far edges.
-HANDLE_W = 1.25
+# staying clear of the extrusions, the bolt channels and the far edges.
+# On a plate too small for it, the handle and the wood around it shrink by
+# one factor until it fits: the same shape, smaller.
+HANDLE_W = 1.25       # 0 = no handle
 HANDLE_WEB = 1.75     # wood left between the angled edge and the handle
+HANDLE_EDGE = 1.0     # wood left between the far edges and the handle
+HANDLE_GAP = 1 / 8    # wood left between the bolt channels and the handle
 HANDLE_MIN = 3.0      # shortest handle allowed
+HANDLE_SMALLEST = 0.5  # narrowest the shrunk handle may get; below that there's none
 
-CLEAR = 0.012         # added to joint holes, pockets and counterbores for fit
-KERF = 0.2 / 25.4     # laser kerf; cut files are offset by half of it. 0 if the laser software compensates
+CLEAR = 0.012         # added to joint holes, pockets and finger notches for fit
+KERF = 0.2 * MM       # laser kerf; cut files are offset by half of it. 0 if the laser software compensates
+
+# Handibot: one flat setup per plate cuts the outline, the holes and the nut
+# pockets. Then the three plates are bolted into a stack through the middle
+# rail holes, with spacers between them, and two edge-up setups cut the finger
+# notches and drill the bolt channels: one for the first joint edge of all
+# three plates, one for the other.
+BIT = 1 / 4           # the one bit for the whole job: smallest hole, slot and radius
+WORK = (6.0, 8.0)     # Handibot travel, X by Y
+GAP = 3 / 8           # spacer thickness between plates in the stack
+STACK = ("bottom", "side", "front")  # stacking order, first plate at the bottom
 
 OUT = Path(__file__).parent / "out"
+HANDIBOT = True       # write out/handibot/; off for laser-only variants
+
+# Named variants override the parameters above: `uv run bracket.py small`
+# writes to out/small/.
+VARIANTS = {
+    # Laser only, one plate per 3.5" scrap square: 1/4" ply, single 20 x 20 mm
+    # extrusion (one slot per face, M5 T-nuts, M5 tapped end bore), M3 x 20
+    # button heads into captive M3 nuts, the only common nut that fits inside
+    # 1/4" ply.
+    "small": {
+        "T": 0.25,
+        "SIZE": {"x": 3.25, "y": 3.25, "z": 3.25},
+        "PLATES": {
+            "bottom": ("x", "y", 2.25, 2.25),
+            "side":   ("y", "z", 2.25, 2.25),
+            "front":  ("x", "z", 2.25, 2.25),
+        },
+        "RAIL": 20 * MM,
+        "RAIL_SLOTS": (10 * MM,),
+        "END_BORES": (10 * MM,),
+        "RAIL_HOLE_D": 5.5 * MM,
+        "END_HOLE_D": 5.5 * MM,
+        "RAIL_MID": False,
+        "RAIL_MARGIN": 0.15,
+        "BOLT_D": 3 * MM,
+        "BOLT_LEN": 20 * MM,
+        "HEAD_D": 5.7 * MM,
+        "HEAD_H": 1.65 * MM,
+        "NUT_AF": 5.5 * MM,
+        "NUT_T": 2.4 * MM,
+        "NUT_OFFSET": 0.3,
+        "JOINT_ENDS": (1.0, 1.0),
+        "FINGER_W": 0.6,
+        "BIT": 1 * MM,    # smallest laser feature, so it never sets a hole size
+        "HANDIBOT": False,
+    },
+}
+if len(sys.argv) > 1:
+    if sys.argv[1] not in VARIANTS:
+        sys.exit(f"unknown variant {sys.argv[1]!r}; one of: {', '.join(VARIANTS)}")
+    globals().update(VARIANTS[sys.argv[1]])
+    OUT = OUT / sys.argv[1]
 
 # --- derived -----------------------------------------------------------------
 
 AXES = {"x": Vector(1, 0, 0), "y": Vector(0, 1, 0), "z": Vector(0, 0, 1)}
-HOLE_D = BOLT_D + CLEAR
+# Nothing smaller than the bit can be cut.
+HOLE_D = max(BOLT_D + CLEAR, BIT)
+RAIL_HOLE = max(RAIL_HOLE_D, BIT)
+END_HOLE = max(END_HOLE_D, BIT)
 CBORE_D = HEAD_D + 2 * CLEAR
 BITE = BOLT_LEN - T + HEAD_RECESS  # bolt length that ends up inside the neighbour's edge
-
-
-# Along each edge the member gets a pair of holes at each end of the plate
-# (slot spacing, so the pair at the corner lands on the crossing member), and
-# the joint bolts run from the middle of one pair to the middle of the other.
-MID = sum(RAIL_SLOTS) / 2
+RUN = BIT / 2 + 1 / 32  # how far edge-up pockets run past each face
+CHANNEL = T + BITE + 1 / 16  # bolt channel depth from the outside edge
+# The middle rail holes sit at the same spot on every plate, halfway between
+# the corner hole and the far hole of the shortest leg.
+MID_AT = (T + min(SIZE.values())) / 2
 
 
 def rail_positions(length):
-    return [T + s for s in RAIL_SLOTS] + [length - s for s in reversed(RAIL_SLOTS)]
+    mid = [MID_AT] if RAIL_MID else []
+    far = [length - s for s in reversed(RAIL_SLOTS)] if RAIL_FAR else []
+    return [T + s for s in RAIL_SLOTS] + mid + far
 
 
 def joint_positions(length):
-    first, last = T + MID, length - MID
+    first, last = T + JOINT_ENDS[0], length - JOINT_ENDS[1]
+    if JOINTS_PER_EDGE == 1:
+        return [(first + last) / 2]
     step = (last - first) / (JOINTS_PER_EDGE - 1)
     return [first + k * step for k in range(JOINTS_PER_EDGE)]
 
 
 JOINTS = {a: joint_positions(n) for a, n in SIZE.items()}
 
-assert set(OVERLAPS) == set(OVERLAPS.values()) == set(PLATES)
+assert set(OVERLAPS) == set(OVERLAPS.values()) == set(PLATES) == set(STACK)
 assert all(OVERLAPS[OVERLAPS[p]] != p for p in PLATES), "overlaps must form a cycle"
 assert NUT_AF <= T, "nut is wider across flats than the sheet is thick"
 nut_proud = (NUT_AF / cos(radians(30)) - T) / 2
@@ -108,6 +178,8 @@ if nut_proud > 0:
     print(f"warning: hex nut corners stand {nut_proud:.3f} in proud of each face", file=sys.stderr)
 assert NUT_OFFSET + NUT_T < BITE, "bolt too short to pass through the nut"
 assert 0 <= HEAD_RECESS < T
+assert not HANDLE_W or BIT <= HANDLE_SMALLEST <= HANDLE_W, "HANDLE_SMALLEST must lie between BIT and HANDLE_W"
+assert GAP - RUN >= 1 / 8, "spacers too thin: less than 1/8 in between the bit and the next plate"
 
 cbore_wood = (T - CBORE_D) / 2
 if HEAD_RECESS and cbore_wood < 1 / 16:
@@ -141,51 +213,96 @@ def fits(cut, body):
     return (cut - body).area < 1e-9
 
 
+def outline(plate):
+    u, v, cut_u, cut_v = PLATES[plate]
+    U, V = SIZE[u], SIZE[v]
+    return Polygon((0, 0), (U, 0), (U, cut_v), (cut_u, V), (0, V), align=None)
+
+
 def holes(along):
     return [Pos(b, T / 2) * Circle(HOLE_D / 2) for b in along]
 
 
+# Oval nut pocket, so a router needs no square corners. The round ends are set
+# so the nut's corners just clear them; turning the nut swings its corners
+# out past the ends, so it can't spin.
+POCKET_W = max(NUT_T + CLEAR, BIT)
+POCKET_L = NUT_AF + CLEAR + POCKET_W - 2 * sqrt((POCKET_W / 2) ** 2 - (NUT_T / 2) ** 2)
+assert NUT_AF + CLEAR < NUT_AF / cos(radians(30)), "nut pocket too loose to stop the nut turning"
+
+
+def nut_pockets(along):
+    return [Pos(b, T + NUT_OFFSET + POCKET_W / 2) * SlotOverall(POCKET_L, POCKET_W) for b in along]
+
+
 def nut_slots(along):
+    """Bolt channel from the notch floor, plus the nut pocket."""
+    tip = CHANNEL - HOLE_D / 2
     return [
-        Pos(b, T) * Rectangle(HOLE_D, BITE + 1 / 16, align=(Align.CENTER, Align.MIN))
-        + Pos(b, T + NUT_OFFSET) * Rectangle(NUT_AF + CLEAR, NUT_T + CLEAR, align=(Align.CENTER, Align.MIN))
-        for b in along
+        Pos(b, T) * Rectangle(HOLE_D, tip - T, align=(Align.CENTER, Align.MIN))
+        + Pos(b, tip) * Circle(HOLE_D / 2) + pocket
+        for b, pocket in zip(along, nut_pockets(along))
     ]
 
 
-def rail_points(plate):
-    """Hole pairs at both ends of each member along the plate's edges, plus
-    the post's end bores on the plate the post stands on."""
+def rail_holes(plate):
+    """{(u, v): diameter} for the members along the plate's edges, plus the
+    post's end bores on the plate the post stands on."""
     u, v = axes(plate)
     across = [T + s for s in RAIL_SLOTS]
-    points = {(a, c) for a in rail_positions(SIZE[u]) for c in across}
-    points |= {(c, a) for a in rail_positions(SIZE[v]) for c in across}
+    points = {(a, c): RAIL_HOLE for a in rail_positions(SIZE[u]) for c in across}
+    points |= {(c, a): RAIL_HOLE for a in rail_positions(SIZE[v]) for c in across}
     if normal_axis(plate) == POST:
-        points |= {(T + a, T + b) for a in END_BORES for b in END_BORES}
-    return sorted({(round(a, 6), round(b, 6)) for a, b in points})
+        points |= {(T + a, T + b): END_HOLE for a in END_BORES for b in END_BORES}
+    return {(round(a, 6), round(b, 6)): d for (a, b), d in points.items()}
 
 
 def handle(plate):
-    """(centre, direction, overall length) of the handle slot."""
+    """(centre, direction, overall length, width) of the handle slot, or None
+    when even the smallest one doesn't fit."""
+    if not HANDLE_W:
+        return None
+    if fit := handle_at(plate, 1.0):
+        return fit
+    lo, hi = HANDLE_SMALLEST / HANDLE_W, 1.0  # scales that fit and don't
+    if not handle_at(plate, lo):
+        return None
+    for _ in range(20):
+        mid = (lo + hi) / 2
+        lo, hi = (mid, hi) if handle_at(plate, mid) else (lo, mid)
+    return handle_at(plate, lo)
+
+
+def handle_at(plate, k):
+    """The handle with its width, length and surrounding wood scaled by k, or
+    None if it doesn't fit."""
     u, v, cut_u, cut_v = PLATES[plate]
     a, b = Vector(SIZE[u], cut_v, 0), Vector(cut_u, SIZE[v], 0)
     d = (b - a).normalized()
-    r = HANDLE_W / 2
-    line = (a + b) / 2 + Vector(-d.Y, d.X, 0) * (HANDLE_WEB + r)
+    w = HANDLE_W * k
+    r = w / 2
+    line = (a + b) / 2 + Vector(-d.Y, d.X, 0) * (HANDLE_WEB * k + r)
     # Slide the end centres along the line until the slot touches the
-    # extrusions' footprint (low side) or the far-edge web (high side).
+    # extrusions' footprint or the bolt channels (low side) or the far-edge
+    # web (high side). The channels run in from the nut edge.
+    nut_edge = u if shared(plate, OVERLAPS[plate]) == v else v
+    channels = CHANNEL + HANDLE_GAP
     lo, hi = -float("inf"), float("inf")
-    for c, dc, top in ((line.X, d.X, SIZE[u]), (line.Y, d.Y, SIZE[v])):
-        t1, t2 = (T + RAIL + r - c) / dc, (top - HANDLE_WEB - r - c) / dc
+    for c, dc, top, across in ((line.X, d.X, SIZE[u], v), (line.Y, d.Y, SIZE[v], u)):
+        floor = max(T + RAIL, channels if across == nut_edge else 0)
+        t1, t2 = (floor + r - c) / dc, (top - HANDLE_EDGE * k - r - c) / dc
         lo, hi = max(lo, min(t1, t2)), min(hi, max(t1, t2))
-    length = hi - lo + HANDLE_W
-    assert length >= HANDLE_MIN, f"{plate}: only room for a {length:.2f} in handle"
-    return line + d * ((lo + hi) / 2), d, length
+    # Keep it centred on the angled edge: the tighter end sets the length.
+    half = min(-lo, hi)
+    length = 2 * half + w
+    if lo > 0 or hi < 0 or length < HANDLE_MIN * k:
+        return None
+    return line, d, length, w
 
 
-def handle_slot(plate):
-    centre, d, length = handle(plate)
-    return Pos(centre) * SlotOverall(length, HANDLE_W, rotation=degrees(atan2(d.Y, d.X)))
+def handle_slot(h):
+    centre, d, length, w = h
+    return Pos(centre) * SlotOverall(length, w, rotation=degrees(atan2(d.Y, d.X)))
 
 
 def footprint(plate):
@@ -209,27 +326,34 @@ def gaps(axis):
     return [(a, b) for a, b in zip(ends[::2], ends[1::2]) if b > a]
 
 
-def notches(stretches, widen=0.0):
-    return [
-        Pos(a - widen, 0) * Rectangle(b - a + 2 * widen, T, align=(Align.MIN, Align.MIN))
-        for a, b in stretches
-    ]
+def notch_stretches(plate, axis):
+    """Stretches of this plate's edge along `axis` cut back by one sheet
+    thickness, including the open outside corner."""
+    if shared(plate, OVERLAPS[plate]) == axis:
+        stretches = gaps(axis)
+    else:
+        stretches = [(a - CLEAR / 2, b + CLEAR / 2) for a, b in fingers(axis)]
+    merged = []
+    for a, b in sorted([(0.0, T)] + stretches):
+        if merged and a <= merged[-1][1] + 1e-9:
+            merged[-1] = (merged[-1][0], max(b, merged[-1][1]))
+        else:
+            merged.append((a, b))
+    return merged
 
 
 def plate_face(plate):
-    u, v, cut_u, cut_v = PLATES[plate]
-    U, V = SIZE[u], SIZE[v]
+    u, v = axes(plate)
     bolt_edge = shared(plate, OVERLAPS[plate])
     nut_edge = u if bolt_edge == v else v
 
-    face = Polygon((0, 0), (U, 0), (U, cut_v), (cut_u, V), (0, V), align=None)
-    face -= Rectangle(T, T, align=(Align.MIN, Align.MIN))  # the outside corner is left open
-    # The neighbour's edge sits in each notch; the nut plate's notches get the clearance.
-    cuts = [(bolt_edge, notches(gaps(bolt_edge))), (nut_edge, notches(fingers(nut_edge), CLEAR / 2))]
-    for edge, rects in cuts:
-        for r in rects:
-            face -= r if edge == u else mirror(r, SWAP)
-    face -= handle_slot(plate)
+    face = outline(plate)
+    for axis in (u, v):
+        for a, b in notch_stretches(plate, axis):
+            r = Pos(a, 0) * Rectangle(b - a, T, align=(Align.MIN, Align.MIN))
+            face -= r if axis == u else mirror(r, SWAP)
+    if h := handle(plate):
+        face -= handle_slot(h)
 
     joints = [
         c if edge == u else mirror(c, SWAP)
@@ -240,12 +364,12 @@ def plate_face(plate):
         assert fits(c, face), f"{plate}: a joint cut runs into the outline or handle"
         face -= c
 
-    rails = rail_points(plate)
-    for p in rails:
-        assert fits(Pos(*p) * Circle(RAIL_HOLE_D / 2 + RAIL_MARGIN), face), \
-            f"{plate}: rail hole at {p} is too close to another cut or the edge"
-    for p in rails:
-        face -= Pos(*p) * Circle(RAIL_HOLE_D / 2)
+    rails = rail_holes(plate)
+    for p, d in rails.items():
+        assert fits(Pos(*p) * Circle(d / 2 + RAIL_MARGIN), face), \
+            f"{plate}: hole at {p} is too close to another cut or the edge"
+    for p, d in rails.items():
+        face -= Pos(*p) * Circle(d / 2)
 
     assert len(face.faces()) == 1, f"{plate}: a cutout breaks through the outline"
     return face, len(rails)
@@ -314,6 +438,153 @@ def iso_svg(shape, path, eye=(3, 2, 2.5)):
     svg.write(path)
 
 
+# --- Handibot ----------------------------------------------------------------
+# Flat files are drawn as seen from the face that is up on the Handibot.
+
+def flat_ops(plate):
+    """(layer, shape) for the flat setup: the outline as a tool-centre path plus
+    every through cut. The notches and bolt channels are left for the edge-up
+    setups."""
+    u, v = axes(plate)
+    bolt_edge = shared(plate, OVERLAPS[plate])
+    nut_edge = u if bolt_edge == v else v
+
+    def along(shape, edge):
+        return shape if edge == u else mirror(shape, SWAP)
+
+    ops = [("profile", offset(outline(plate), BIT / 2, kind=Kind.INTERSECTION).faces()[0].outer_wire())]
+    ops += [("through", along(c, bolt_edge)) for c in holes(JOINTS[bolt_edge])]
+    ops += [("through", along(c, nut_edge)) for c in nut_pockets(JOINTS[nut_edge])]
+    ops += [("through", Pos(*p) * Circle(d / 2)) for p, d in rail_holes(plate).items()]
+    if h := handle(plate):
+        ops.append(("through", handle_slot(h)))
+    return ops
+
+
+def rotated(plate):
+    """Turn the plate 90 degrees when it's wider than it is tall, so the long
+    side runs along the Handibot's Y."""
+    u, v = axes(plate)
+    return SIZE[u] > SIZE[v]
+
+
+def check_flat(plate, ops):
+    size = Compound(children=[shape for _, shape in ops]).bounding_box().size
+    w, h = (size.Y, size.X) if rotated(plate) else (size.X, size.Y)
+    assert w <= WORK[0] + 1e-9 and h <= WORK[1] + 1e-9, \
+        f"{plate}: tool path spans {w:.3f} x {h:.3f} in, more than the Handibot's {WORK[0]} x {WORK[1]}"
+
+
+def gang(edge):
+    """Notch pockets and channel drill points for one edge-up setup: edge 0 is
+    each plate's u edge, edge 1 its v edge. x runs across the stack from the
+    left plate's left face, y along the edges from the corner end. Returns
+    [(plate, axis, x0, pockets, drills)] left to right, where x0 is that plate's
+    left face."""
+    # Looking down on the u edges, plates higher in the stack sit further left;
+    # on the v edges they sit further right.
+    order = list(STACK) if edge == 1 else list(reversed(STACK))
+    boards = []
+    for i, plate in enumerate(order):
+        axis = axes(plate)[edge]
+        x0 = i * (T + GAP)
+        pockets = []
+        for a, b in notch_stretches(plate, axis):
+            a = -RUN if a <= 0 else a
+            b = SIZE[axis] + RUN if b >= SIZE[axis] - 1e-9 else b
+            assert b - a >= BIT, f"{plate} {axis} edge: a {b - a:.3f} in notch is narrower than the bit"
+            pockets.append(Pos(x0 - RUN, a) * Rectangle(T + 2 * RUN, b - a, align=(Align.MIN, Align.MIN)))
+        nut_edge = shared(plate, OVERLAPS[plate]) != axis
+        drills = [Pos(x0 + T / 2, b) * Circle(HOLE_D / 2) for b in JOINTS[axis]] if nut_edge else []
+        boards.append((plate, axis, x0, pockets, drills))
+    # The bit's centre stays a radius inside the pocket outlines.
+    width = len(order) * T + (len(order) - 1) * GAP + 2 * RUN - BIT
+    length = max(SIZE[axis] for _, axis, _, _, _ in boards) + 2 * RUN - BIT
+    assert width <= WORK[0] and length <= WORK[1], \
+        f"edge-up setup {edge + 1} needs {width:.3f} x {length:.3f} in of travel"
+    return boards
+
+
+def steps():
+    lines = [
+        f"Sheet {T:.4f} in, bit {BIT:.4f} in, spacers {GAP:.4f} in.",
+        "",
+        "1. Flat, one per plate. The profile layer is the tool-centre path: cut on the",
+        "   line, full depth, with tabs. The through layer (holes, nut pockets, handle):",
+        "   cut inside, full depth.",
+    ]
+    for plate, (u, v, _, _) in PLATES.items():
+        turn = f", turned 90 degrees so the {u} edge runs along +Y" if rotated(plate) else ""
+        lines.append(f"   {plate}_flat.dxf: {SIZE[u]:.3f} x {SIZE[v]:.3f} in{turn}")
+    lines += [
+        "",
+        f"2. Mark the up face of each plate. Stack them face-up as cut, {', '.join(STACK)}",
+        "   from the bottom, with a spacer between each, bolted through the two middle",
+        "   rail holes (the ones halfway along each leg).",
+        "",
+    ]
+    for edge in (0, 1):
+        boards = gang(edge)
+        order = ", ".join(f"{p} ({a} edge)" for p, a, _, _, _ in boards)
+        lines += [
+            f"{3 + edge}. Edge-up, edges_{edge + 1}.dxf. Left to right: {order}.",
+            f"   y = 0 at the corner end, x = 0 at the left plate's left face.",
+            f"   pocket layer: {T:.4f} deep. Then drill layer: {CHANNEL:.4f} deep from the",
+            f"   top of the edge. If the bit is shorter, start them and finish with a drill.",
+        ]
+    return "\n".join(lines) + "\n"
+
+
+def write_handibot(out):
+    out.mkdir(exist_ok=True)
+    preview = ExportSVG(unit=Unit.IN)
+    preview.add_layer("work", line_color="lightgray", line_weight=0.5)
+    preview.add_layer("plate", line_color="gray", line_weight=0.5)
+    preview.add_layer("profile", line_color="green", line_weight=1.0)
+    preview.add_layer("through", line_color="blue", line_weight=1.0)
+    preview.add_layer("pocket", line_color="red", line_weight=1.0)
+    preview.add_layer("drill", line_color="purple", line_weight=1.0)
+    box = Rectangle(*WORK, align=(Align.MIN, Align.MIN))
+
+    for i, plate in enumerate(PLATES):
+        ops = flat_ops(plate)
+        check_flat(plate, ops)
+        if rotated(plate):
+            ops = [(layer, Rot(0, 0, 90) * shape) for layer, shape in ops]
+        dxf = ExportDXF(unit=Unit.IN)
+        for layer in ("profile", "through"):
+            dxf.add_layer(layer)
+        for layer, shape in ops:
+            dxf.add_shape(shape, layer=layer)
+        dxf.write(out / f"{plate}_flat.dxf")
+        # Preview: each setup inside the Handibot's travel.
+        corner = Compound(children=[s for layer, s in ops if layer == "profile"]).bounding_box().min
+        at = Pos(i * (WORK[0] + 1) - corner.X, -corner.Y)
+        preview.add_shape(Pos(i * (WORK[0] + 1), 0) * box, layer="work")
+        for layer, shape in ops:
+            preview.add_shape(at * shape, layer=layer)
+
+    for edge in (0, 1):
+        dxf = ExportDXF(unit=Unit.IN)
+        dxf.add_layer("pocket")
+        dxf.add_layer("drill")
+        at = Pos(edge * (WORK[0] + 1), -WORK[1] - 1)
+        preview.add_shape(at * box, layer="work")
+        inside = at * Pos(RUN, RUN)
+        for plate, axis, x0, pockets, drills in gang(edge):
+            preview.add_shape(inside * Pos(x0, 0) * Rectangle(T, SIZE[axis], align=(Align.MIN, Align.MIN)),
+                              layer="plate")
+            for layer, shapes in (("pocket", pockets), ("drill", drills)):
+                for shape in shapes:
+                    dxf.add_shape(shape, layer=layer)
+                    preview.add_shape(inside * shape, layer=layer)
+        dxf.write(out / f"edges_{edge + 1}.dxf")
+    preview.write(out / "preview.svg")
+    (out / "steps.txt").write_text(steps())
+
+
+# --- laser -------------------------------------------------------------------
+
 def cut_path(face):
     """Laser path: outline moved out and holes moved in by half the kerf."""
     return offset(face, KERF / 2, kind=Kind.INTERSECTION) if KERF else face
@@ -335,7 +606,9 @@ def main():
         svg.add_shape(path)
         svg.write(OUT / f"{name}.svg")
         size = face.bounding_box().size
-        print(f"{name:7s} {size.X:.3f} x {size.Y:.3f} in, {n_rail} rail holes, {handle(name)[2]:.2f} in handle")
+        h = handle(name)
+        grip = f", {h[3]:.3f} x {h[2]:.2f} in handle" if h else ", no handle"
+        print(f"{name:7s} {size.X:.3f} x {size.Y:.3f} in, {n_rail} rail holes{grip}")
     print("joint bolts per edge: " + ", ".join(f"{a} {len(b)}" for a, b in JOINTS.items()))
 
     sheet, preview, x = ExportSVG(unit=Unit.IN), ExportSVG(unit=Unit.IN), 0.0
@@ -351,6 +624,8 @@ def main():
     sheet.write(OUT / "parts.svg")
     preview.write(OUT / "preview.svg")  # parts with the extrusion footprints shaded; not for cutting
 
+    if HANDIBOT:
+        write_handibot(OUT / "handibot")
     iso_svg(Compound(children=list(solids.values()) + shanks), OUT / "corner.svg")
     iso_svg(Compound(children=list(solids.values()) + shanks), OUT / "corner_outside.svg", eye=(-2.5, -3, -2))
     iso_svg(Compound(children=list(solids.values()) + rails), OUT / "corner_rails.svg")
