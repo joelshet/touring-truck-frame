@@ -1,0 +1,53 @@
+{
+  "title_block": [
+    [
+      "Outside",
+      "5-3/4\" x 7-3/4\" x 5-3/4\" (146.05 x 196.85 x 146.05 mm)"
+    ],
+    [
+      "Stock",
+      "7/16\" (11.11 mm) plywood"
+    ],
+    [
+      "Plates",
+      "3, overlapping in a cycle"
+    ],
+    [
+      "Extrusion",
+      "30 x 30 mm"
+    ],
+    [
+      "Joint bolts",
+      "6 button heads, 5 x 51 mm, into captive nuts"
+    ],
+    [
+      "Kerf",
+      "0.2 mm, already in the files"
+    ]
+  ],
+  "files": [
+    {
+      "label": "Cut one plate, in inches",
+      "files": [
+        "bottom.svg",
+        "bottom.dxf",
+        "side.svg",
+        "side.dxf",
+        "front.svg",
+        "front.dxf"
+      ]
+    },
+    {
+      "label": "All three side by side, in inches",
+      "files": [
+        "parts.svg"
+      ]
+    },
+    {
+      "label": "Model, in mm",
+      "files": [
+        "corner.step"
+      ]
+    }
+  ]
+}

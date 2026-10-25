@@ -13,12 +13,14 @@ the corner against the plates: the post runs through, the rails butt into it.
     uv run bracket.py        # writes out/ (laser) and out/handibot/ (CNC)
 """
 
+import json
 import sys
+from fractions import Fraction
 from math import atan2, cos, degrees, radians, sqrt
 from pathlib import Path
 
 from build123d import (
-    Align, Box, Circle, Compound, Cylinder, ExportDXF, ExportSVG, Kind,
+    Align, Box, Circle, Compound, Cylinder, ExportDXF, ExportSVG, GeomType, Kind,
     LineType, Plane, Polygon, Pos, Rectangle, Rot, SlotOverall, Unit, Vector,
     export_step, export_stl, extrude, mirror, offset, scale,
 )
@@ -590,6 +592,41 @@ def cut_path(face):
     return offset(face, KERF / 2, kind=Kind.INTERSECTION) if KERF else face
 
 
+def inches(x):
+    """3.25 as 3-1/4", to the nearest 1/64."""
+    f = Fraction(x).limit_denominator(64)
+    whole, rest = divmod(f, 1)
+    return (f"{whole}-{rest}" if whole and rest else f"{rest or whole}") + '"'
+
+
+def write_model(parts, path):
+    """The assembled corner for a browser that turns it: each part's triangle
+    mesh, which hides what's behind it, and its edges, which get drawn. In mm.
+    `parts` is {name: (shape, role)}; role "context" draws in a lighter ink.
+    Seam edges, the line OCCT runs down the inside of every hole, are left out.
+    """
+    from OCP.BRep import BRep_Tool
+    tol = 0.002
+    out = []
+    for name, (shape, role) in parts.items():
+        shape = scale(shape, 25.4)
+        points, triangles = shape.tessellate(tol * 25.4, 0.2)
+        seams = {e for f in shape.faces() for e in f.edges()
+                 if BRep_Tool.IsClosed_s(e.wrapped, f.wrapped)}
+        edges = []
+        for e in shape.edges():
+            if e in seams:
+                continue
+            n = 1 if e.geom_type == GeomType.LINE else min(96, max(12, int(e.length / 1.0) + 1))
+            edges.append([round(c, 2) for p in e.positions([i / n for i in range(n + 1)])
+                          for c in (p.X, p.Y, p.Z)])
+        out.append({"name": name, "role": role,
+                    "points": [round(c, 2) for p in points for c in (p.X, p.Y, p.Z)],
+                    "triangles": [i for t in triangles for i in t],
+                    "edges": edges})
+    path.write_text(json.dumps({"units": "mm", "parts": out}, separators=(",", ":")))
+
+
 def main():
     OUT.mkdir(exist_ok=True)
     built = {p: plate_face(p) for p in PLATES}
@@ -632,6 +669,29 @@ def main():
     everything = Compound(children=list(solids.values()) + shanks + rails)
     export_step(scale(everything, 25.4), OUT / "corner.step")  # STEP and STL are read as mm
     export_stl(scale(everything, 25.4), OUT / "corner.stl")
+
+    write_model({**{p: (s, "part") for p, s in solids.items()},
+                 "bolts": (Compound(children=shanks), "part"),
+                 "extrusion": (Compound(children=rails), "context")}, OUT / "model.json")
+    # The drawing sheet this is published on at joelshetler.com: the title block as label and
+    # value in reading order, and the files in groups.
+    n_bolts = sum(len(b) for b in JOINTS.values())
+    title_block = [
+        ("Outside", f'{inches(SIZE["x"])} x {inches(SIZE["y"])} x {inches(SIZE["z"])} '
+                    f'({SIZE["x"] * 25.4:.2f} x {SIZE["y"] * 25.4:.2f} x {SIZE["z"] * 25.4:.2f} mm)'),
+        ("Stock", f"{inches(T)} ({T * 25.4:.2f} mm) plywood"),
+        ("Plates", f"{len(PLATES)}, overlapping in a cycle"),
+        ("Extrusion", f"{RAIL * 25.4:g} x {RAIL * 25.4:g} mm"),
+        ("Joint bolts", f"{n_bolts} button heads, {BOLT_D * 25.4:.0f} x {BOLT_LEN * 25.4:.0f} mm, "
+                        f"into captive nuts"),
+        ("Kerf", f"{KERF * 25.4:g} mm, already in the files"),
+    ]
+    files = [
+        {"label": "Cut one plate, in inches", "files": [f"{p}.{x}" for p in PLATES for x in ("svg", "dxf")]},
+        {"label": "All three side by side, in inches", "files": ["parts.svg"]},
+        {"label": "Model, in mm", "files": ["corner.step"]},
+    ]
+    (OUT / "sheet.json").write_text(json.dumps({"title_block": title_block, "files": files}, indent=2))
 
 
 if __name__ == "__main__":
